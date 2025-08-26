@@ -1,0 +1,67 @@
+services:
+  cintara-node:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cintara-node:local
+    container_name: cintara-node
+    restart: unless-stopped
+    environment:
+      - CHAIN_ID=${CHAIN_ID}
+      - MONIKER=${MONIKER}
+      - PUBLIC_IP=${PUBLIC_IP}
+      - LLM_BRIDGE_URL=http://bridge:8080/analyze
+    volumes:
+      - ./data:/data
+    ports:
+      - "26656:26656"
+      - "26657:26657"
+    command: >
+      bash -lc "
+      if [ ! -f /data/.tmp-cintarad/config/genesis.json ]; then
+        echo 'First run: docker compose run --rm -e RUN_MODE=init cintara-node';
+        echo 'Then: docker compose run --rm config-patcher';
+        echo 'Finally: docker compose up -d';
+        sleep infinity;
+      else
+        cintarad start --home /data/.tmp-cintarad;
+      fi"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:26657/status > /dev/null || exit 1"]
+
+  config-patcher:
+    image: alpine:3.20
+    working_dir: /work
+    entrypoint: ["/bin/sh","-lc"]
+    environment:
+      - PUBLIC_IP=${PUBLIC_IP}
+      - RPC_PORT=${RPC_PORT}
+      - P2P_PORT=${P2P_PORT}
+    volumes:
+      - ./data:/data
+      - ./scripts:/work/scripts:ro
+    command: >
+      "/work/scripts/patch-config.sh /data/.tmp-cintarad/config/config.toml $PUBLIC_IP $RPC_PORT $P2P_PORT"
+
+  llama:
+    image: ${LLAMA_REPO}@${LLAMA_DIGEST}
+    command: [
+      "--model","/models/${MODEL_FILE}",
+      "--ctx-size","${CTX_SIZE}",
+      "--threads","${LLM_THREADS}",
+      "--host","0.0.0.0",
+      "--port","8000"
+    ]
+    volumes:
+      - ./models:/models:ro
+    expose: ["8000"]
+
+  bridge:
+    build: ./bridge
+    environment:
+      - LLAMA_SERVER_URL=http://llama:8000
+    depends_on:
+      llama:
+        condition: service_started
+    ports:
+      - "8080:8080"
